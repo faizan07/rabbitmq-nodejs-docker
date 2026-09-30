@@ -5,29 +5,48 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm install                  # install deps (amqplib, nodemon)
-node producer.js             # publish one mail message, then exit
-npx nodemon consumer.js      # run the consumer (long-lived; nodemon restarts on edit)
+npm install                                  # install deps (amqplib, nodemon)
+
+# 001 — one queue, one consumer
+node 001_producer.js                         # publish one message, then exit
+npx nodemon 001_consumer.js                  # long-lived consumer
+
+# 002 — two queues, two consumers (note the space in the producer's filename)
+npx nodemon 002_multi_consumer_1.js
+npx nodemon 002_multi_consumer_2.js
+node "002_producer_with multi_consumer.js"
 ```
 
 There is no test script, linter, or build step — `npm test` is still the npm-init placeholder that exits 1.
 
-A RabbitMQ broker must be listening on `amqp://localhost` before either script runs. This repo has no Dockerfile or compose file despite its name; the broker is expected to be started outside the repo (e.g. `docker run -p 5672:5672 rabbitmq`).
+A broker must be listening on `amqp://localhost` before any script runs. This repo has no Dockerfile or compose file despite its name; the broker is started outside the repo (e.g. `docker run -p 5672:5672 rabbitmq`).
 
 ## Architecture
 
-Two standalone scripts that communicate only through a broker-defined topology — they never import each other:
+Five standalone scripts with no shared module and no imports between them. Each connects, declares its own topology, and runs — `001_*` is the single-queue case, `002_*` the two-queue case.
 
-- `producer.js` — `sendEmail()` connects, declares the topology, publishes one JSON mail message, waits 500 ms for the publish to flush, then closes the channel and connection and lets the process exit.
-- `consumer.js` — `receiveEmail()` connects, declares the same queue, and blocks in `channel.consume`, acking each message and logging it. It never closes its connection, so the process runs until killed.
+The contract between producers and consumers is a set of string constants **duplicated independently in every file**:
 
-The contract between them is the triple `mail_exchange` (direct) / routing key `send_mail` / queue `mail_queue`, declared **independently in both files**. Changing an exchange name, routing key, or queue name in one file silently breaks delivery unless the other file is updated to match. Message payload shape is the `{ to, from, subject, body }` object in `producer.js`, parsed with `JSON.parse` in `consumer.js`.
+| | Exchange | Routing key | Queue |
+|---|---|---|---|
+| 001 | `mail_exchange` (direct) | `send_mail` | `mail_queue` |
+| 002 branch A | `mail_exchange` (direct) | `send_mail_to_subscribed_user` | `mail_queue_sub` |
+| 002 branch B | `mail_exchange` (direct) | `send_mail_to_normal_user` | `mail_queue_normal` |
 
-Topology is declared with `assertQueue`/`assertExchange`/`bindQueue` on every run, which is how the scripts are order-independent: whichever starts first creates the exchange, queue, and binding.
+Renaming any of these in one file silently breaks delivery unless the matching file is updated too — the message still publishes successfully and simply lands nowhere. The payload shape is `{ to, from, subject, body }`, JSON-encoded via `Buffer.from(JSON.stringify(...))` and parsed with `JSON.parse`.
+
+Topology is declared with `assertQueue`/`assertExchange`/`bindQueue` on every run, which is how the scripts are order-independent: whichever starts first creates the entities.
+
+Each script is an independent copy of the same skeleton — `002_multi_consumer_1.js` and `002_multi_consumer_2.js` differ only in the queue name they hardcode.
+
+## Docs
+
+`README.md` is the user-facing entry point; `001_ARCHITECTURE.md` and `002_ARCHITECTURE.md` explain each topology and embed `rabbit.png` and `rabbit2.png`. If you change any constant in the table above, the matching diagram and architecture doc go stale in the same commit — the diagrams have the old names baked in as raster text.
 
 ## Gotchas
 
-- `producer.js` declares the queue with `{ durable: false }` but publishes with `{ persistent: true }`. The persistent flag has no effect on a non-durable queue — messages are lost on broker restart regardless. Also note the arguments passed to `assertQueue`/`assertExchange` must match on both sides, or the broker closes the channel with a `PRECONDITION_FAILED` error; if you change durability, change it in both files.
-- `producer.js` relies on a `setTimeout(..., 500)` to let the publish reach the broker before closing. There are no publisher confirms, so this is a timing hack, not a guarantee.
-- The AMQP URL is hardcoded as `amqp://localhost` in both files, with no environment-variable override and no credentials (the broker must allow guest access over localhost).
-- Errors are caught and only `console.log`ged. A failure to connect leaves the producer exiting normally and the consumer process alive but idle.
+- **A direct exchange routes by exact key match, so one `publish` reaches one queue.** In 002 the producer binds *both* queues but publishes only under `send_mail_to_subscribed_user`, so `002_multi_consumer_2.js` receives nothing as written. This is a real behavior, not a wiring bug — see `002_ARCHITECTURE.md` for how to fan out (publish per key, fanout exchange, or topic exchange).
+- Producers declare queues with `{ durable: false }` but publish with `{ persistent: true }`. The flag is inert on a non-durable queue. The arguments to `assertQueue`/`assertExchange` must also match across files, or the broker closes the second script's channel with `PRECONDITION_FAILED`.
+- Producers rely on `setTimeout(..., 500)` to let the publish flush before closing. There are no publisher confirms, so this is a timing assumption, not a guarantee.
+- The AMQP URL is hardcoded as `amqp://localhost` in every file, with no environment-variable override and no credentials.
+- Errors are caught and only `console.log`ged — a failed connection leaves a producer exiting normally and a consumer alive but idle.

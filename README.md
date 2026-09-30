@@ -1,21 +1,22 @@
 # rabbitmq-nodejs-docker
 
-A minimal RabbitMQ producer/consumer example in Node.js using [amqplib](https://amqp-node.github.io/amqplib/).
+Minimal RabbitMQ producer/consumer examples in Node.js using [amqplib](https://amqp-node.github.io/amqplib/).
 
-`producer.js` publishes a single JSON "mail" message to a direct exchange; `consumer.js` subscribes to the bound queue and logs each message it receives. The two scripts share no code — they communicate only through the RabbitMQ broker.
+- **`001_*`** — one producer, one exchange, one queue, one consumer
+- **`002_*`** — one producer, one exchange, two queues, two consumers, routed by user type
+
+See [001_ARCHITECTURE.md](001_ARCHITECTURE.md) and [002_ARCHITECTURE.md](002_ARCHITECTURE.md) for diagrams and how each topology works.
 
 ## Requirements
 
 - Node.js 18+ (developed against v22)
-- A running RabbitMQ broker reachable at `amqp://localhost`
-
-If you don't have a broker yet, start one with Docker:
+- A RabbitMQ broker reachable at `amqp://localhost`
 
 ```bash
 docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:management
 ```
 
-Port `5672` is the AMQP port both scripts connect to. Port `15672` serves the management UI at http://localhost:15672 (default login `guest` / `guest`) — useful for inspecting the exchange, queue, and message counts.
+`5672` is the AMQP port; `15672` serves the management UI at http://localhost:15672 (default login `guest` / `guest`).
 
 ## Setup
 
@@ -25,45 +26,36 @@ npm install
 
 ## Running
 
-Start the consumer first, then the producer in a second terminal:
+**001** — consumer first, then the producer:
 
 ```bash
-# terminal 1 — stays running, prints each message as it arrives
-npx nodemon consumer.js
+npx nodemon 001_consumer.js     # terminal 1
+node 001_producer.js            # terminal 2
 ```
+
+**002** — the producer's filename contains a space, so quote it:
 
 ```bash
-# terminal 2 — publishes one message, then exits
-node producer.js
+npx nodemon 002_multi_consumer_1.js               # terminal 1
+npx nodemon 002_multi_consumer_2.js               # terminal 2
+node "002_producer_with multi_consumer.js"        # terminal 3
 ```
 
-The consumer logs reception and acknowledges the message:
+Consumers log each message and stay running; producers publish one message and exit.
 
-```
-[x] Received mail: { to: '...', from: '...', subject: 'RabbitMQ test 2', body: '...' }
-```
+## Topology
 
-`nodemon` restarts the consumer automatically on file changes. Plain `node consumer.js` works too if you don't want that.
+| | 001 | 002 |
+|---|---|---|
+| Exchange | `mail_exchange` (direct) | `mail_exchange` (direct) |
+| Routing keys | `send_mail` | `send_mail_to_subscribed_user`, `send_mail_to_normal_user` |
+| Queues | `mail_queue` | `mail_queue_sub`, `mail_queue_normal` |
+| Payload | `{ to, from, subject, body }` as JSON | same |
 
-## How it works
-
-| | |
-|---|---|
-| Exchange | `mail_exchange` (type `direct`) |
-| Routing key | `send_mail` |
-| Queue | `mail_queue` |
-| Message body | JSON — `{ to, from, subject, body }` |
-
-Both scripts declare the exchange, queue, and binding on startup (`assertExchange` / `assertQueue` / `bindQueue`), so either can be started first — whichever runs first creates the topology.
-
-The producer publishes to `mail_exchange` with routing key `send_mail`; the direct exchange routes it to `mail_queue` because the queue is bound with that exact key. The consumer reads from `mail_queue`, parses the buffer back into an object, and acks.
-
-To change the message content, edit the `message` object in `producer.js`. Message text is buffered via `Buffer.from(JSON.stringify(message))` — the broker only ever carries bytes, so the JSON encoding is the two scripts' own convention, not something AMQP enforces.
+Both scripts in each pair declare the exchange, queues, and bindings on startup, so either can be started first.
 
 ## Notes
 
-- **The queue is not durable and messages are not persistent.** `producer.js` declares the queue with `{ durable: false }` and publishes with `{ persistent: true }`, but the persistent flag has no effect on a non-durable queue. Messages still sitting in the queue are lost if the broker restarts.
-- **`assertQueue`/`assertExchange` arguments must match on both sides.** If you change durability in one file but not the other, whichever script starts second will have its channel closed by the broker with a `PRECONDITION_FAILED` error.
-- **The connection URL is hardcoded** as `amqp://localhost` in both files, with no environment-variable override. Guest access without a password only works because the broker is on localhost.
-- **The producer uses a `setTimeout(..., 500)` to flush before closing** the channel and connection. There are no publisher confirms, so this is a timing assumption rather than a delivery guarantee — publishing to a slow or remote broker may drop the message.
-- **Errors are only logged** with `console.log`, so a failed connection will not produce a non-zero exit code.
+- In **002**, the producer binds both queues but publishes only under `send_mail_to_subscribed_user`, so Consumer 2 stays idle unless you also publish to `send_mail_to_normal_user`. A direct exchange routes by exact key match — one publish reaches one queue.
+- Queues are declared non-durable, and there are no publisher confirms, so messages can be lost on a broker restart or slow publish.
+- The broker URL is hardcoded as `amqp://localhost` in every file.
