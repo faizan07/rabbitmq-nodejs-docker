@@ -2,7 +2,7 @@
 
 The baseline topology: a single message goes into a single queue and is picked up by a single consumer.
 
-![001 topology: Producer → exchange mail_exchange → routing key send_mail → mail_queue → Consumer](rabbit.png)
+![001 topology: Producer → exchange mail_exchange → routing key send_mail → mail_queue → Consumer](../rabbit.png)
 
 ## Topology at a glance
 

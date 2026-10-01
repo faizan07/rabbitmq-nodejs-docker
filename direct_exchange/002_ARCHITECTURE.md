@@ -2,7 +2,7 @@
 
 Routing by recipient type: one exchange fans out to two queues, each served by its own consumer.
 
-![002 topology: Producer → exchange mail_exchange → two routing keys → two queues → Consumer 1 and Consumer 2](rabbit2.png)
+![002 topology: Producer → exchange mail_exchange → two routing keys → two queues → Consumer 1 and Consumer 2](../rabbit2.png)
 
 ## Topology at a glance
 

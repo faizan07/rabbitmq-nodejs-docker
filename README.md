@@ -2,10 +2,15 @@
 
 Minimal RabbitMQ producer/consumer examples in Node.js using [amqplib](https://amqp-node.github.io/amqplib/).
 
-- **`001_*`** — one producer, one exchange, one queue, one consumer
-- **`002_*`** — one producer, one exchange, two queues, two consumers, routed by user type
+Two topologies, one directory each:
 
-See [001_ARCHITECTURE.md](001_ARCHITECTURE.md) and [002_ARCHITECTURE.md](002_ARCHITECTURE.md) for diagrams and how each topology works.
+| Directory | Scripts | Topology |
+|---|---|---|
+| `direct_exchange/` | `001_*` | one producer, one exchange, one queue, one consumer |
+| | `002_*` | one producer, one exchange, two queues, two consumers, routed by routing key |
+| `topic_exchange/` | `producer.js` | one producer, one topic exchange, two queues, two notification services, routed by wildcard binding |
+
+See the `ARCHITECTURE.md` in each directory for diagrams and how the topology actually routes.
 
 ## Requirements
 
@@ -26,36 +31,45 @@ npm install
 
 ## Running
 
-**001** — consumer first, then the producer:
+**`direct_exchange/001`** — consumer first, then the producer:
 
 ```bash
-npx nodemon 001_consumer.js     # terminal 1
-node 001_producer.js            # terminal 2
+npx nodemon direct_exchange/001_consumer.js     # terminal 1
+node direct_exchange/001_producer.js            # terminal 2
 ```
 
-**002** — the producer's filename contains a space, so quote it:
+**`direct_exchange/002`** — the producer's filename contains a space, so quote it:
 
 ```bash
-npx nodemon 002_multi_consumer_1.js               # terminal 1
-npx nodemon 002_multi_consumer_2.js               # terminal 2
-node "002_producer_with multi_consumer.js"        # terminal 3
+npx nodemon direct_exchange/002_multi_consumer_1.js        # terminal 1
+npx nodemon direct_exchange/002_multi_consumer_2.js        # terminal 2
+node "direct_exchange/002_producer_with multi_consumer.js" # terminal 3
 ```
 
-Consumers log each message and stay running; producers publish one message and exit.
+**`topic_exchange`** — start both services *before* the producer; a topic exchange with no matching binding drops the message:
+
+```bash
+npx nodemon topic_exchange/order_notification_service.js    # terminal 1
+npx nodemon topic_exchange/payment_notification_service.js  # terminal 2
+node topic_exchange/producer.js                             # terminal 3
+```
+
+Consumers log each message and stay running; producers publish and exit.
 
 ## Topology
 
-| | 001 | 002 |
-|---|---|---|
-| Exchange | `mail_exchange` (direct) | `mail_exchange` (direct) |
-| Routing keys | `send_mail` | `send_mail_to_subscribed_user`, `send_mail_to_normal_user` |
-| Queues | `mail_queue` | `mail_queue_sub`, `mail_queue_normal` |
-| Payload | `{ to, from, subject, body }` as JSON | same |
+| | `direct_exchange/001` | `direct_exchange/002` | `topic_exchange` |
+|---|---|---|---|
+| Exchange | `mail_exchange` (direct) | `mail_exchange` (direct) | `notification_exchange` (topic) |
+| Routing keys | `send_mail` | `send_mail_to_subscribed_user`, `send_mail_to_normal_user` | `order.placed`, `payment.processed` |
+| Queues | `mail_queue` | `mail_queue_sub`, `mail_queue_normal` | `order_queue`, `payment_queue` |
+| Bindings declared by | producer | producer | **consumer** (`order.*`, `payment.*`) |
+| Payload | `{ to, from, subject, body }` | same | `{ orderId, status }` / `{ paymentId, status }` |
 
-Both scripts in each pair declare the exchange, queues, and bindings on startup, so either can be started first.
+Scripts declare the exchange, queues, and bindings on startup, so either side can be started first — except in `topic_exchange`, where the binding is the consumer's subscription and the message is dropped if no consumer has bound yet.
 
 ## Notes
 
-- In **002**, the producer binds both queues but publishes only under `send_mail_to_subscribed_user`, so Consumer 2 stays idle unless you also publish to `send_mail_to_normal_user`. A direct exchange routes by exact key match — one publish reaches one queue.
-- Queues are declared non-durable, and there are no publisher confirms, so messages can be lost on a broker restart or slow publish.
-- The broker URL is hardcoded as `amqp://localhost` in every file.
+- In `direct_exchange/002`, the producer binds both queues but publishes only under `send_mail_to_subscribed_user`, so Consumer 2 stays idle unless you also publish to `send_mail_to_normal_user`. A direct exchange routes by exact key match — one publish reaches one queue. `topic_exchange` is the same flow done with a topic exchange, where one publish still reaches one queue but the *consumer* chooses what it receives.
+- `direct_exchange` declares its queues non-durable while publishing `{ persistent: true }`, so the persistent flag is inert there. `topic_exchange` declares everything `durable: true`, which makes the flag live: a persistent message on a durable queue survives a broker restart.
+- There are no publisher confirms anywhere, and the broker URL is hardcoded as `amqp://localhost` in every file.
